@@ -1,0 +1,204 @@
+provider  "aws"  {
+    region  =  "ap-south-1"
+    profile  =  "lcprofile"
+ }
+
+ resource  "aws_default_vpc"  "default"  {
+    tags  =  {
+          Name  =  "Default VPC"
+  }
+}
+  output  "vpc_id"  {
+       value  =  aws_default_vpc.default.id
+  }
+
+ resource "tls_private_key" "webserver_key" {
+    algorithm   =  "RSA"
+    rsa_bits    =  4096
+}
+resource "local_file" "private_key" {
+    content         =  tls_private_key.webserver_key.private_key_pem
+    filename        =  "webserver.pem"
+    file_permission =  0400
+}
+resource "aws_key_pair" "webserver_key" {
+    key_name   = "webserver"
+    public_key = tls_private_key.webserver_key.public_key_openssh
+}
+
+    resource "aws_security_group" "w_sg" {
+    name        = "w_sg"
+    description = "https, ssh, icmp"
+    vpc_id      = aws_default_vpc.default.id
+     
+     ingress {
+        description = "http"
+        from_port   = 80
+        to_port     = 80
+        protocol    = "tcp"
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+    
+    ingress {
+        description = "ssh"
+        from_port   = 22
+        to_port     = 22
+        protocol    = "tcp"
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+  //  ingress {
+    //    description = "ping-icmp"
+      //  from_port   = -1
+      //  to_port     = -1
+      //  protocol    = "icmp"
+      //  cidr_blocks = ["0.0.0.0/0"]
+  //  }
+    egress {
+        from_port   = 0
+        to_port     = 0
+        protocol    = "-1"
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+tags = {
+        Name = "web"
+    }
+}
+     output  "security"  {
+           value  =  aws_security_group.w_sg.name
+  }
+
+  resource  "aws_instance"  "bla"  {
+     ami                     =   "ami-052c08d70def0ac62"
+     instance_type     =    "t2.micro"
+     key_name          =     aws_key_pair.webserver_key.key_name
+     vpc_security_group_ids  = [aws_security_group.w_sg.id]   
+//  security_groups  =   [ aws_security_group.w_sg.id ]
+        
+         tags  =  {
+            Name  =  "bla"
+          }
+
+        connection {
+        type    = "ssh"
+        user    = "ec2-user"
+        host    = aws_instance.bla.public_ip
+       // port    = 22
+        private_key = tls_private_key.webserver_key.private_key_pem
+    }
+     provisioner "remote-exec" {
+        inline = [
+        "sudo yum install httpd -y",
+        "sudo systemctl start httpd",
+        "sudo systemctl enable httpd",
+        "sudo yum install git -y"
+        ]
+    }
+}
+
+   resource  "aws_ebs_volume"  "vol"  {
+     availability_zone   =   aws_instance.bla.availability_zone
+     size                        =   1
+
+             tags  =  {
+                  Name  =  "web"
+             }
+       }
+
+       resource  "aws_volume_attachment"  "vol_att"  {
+          device_name                 =   "/dev/xvdf"
+          volume_id                     =   aws_ebs_volume.vol.id
+          instance_id                    =   aws_instance.bla.id
+          force_detach                 =   true
+ 
+        connection  {
+               type            =  "ssh"
+               user            =  "ec2-user"
+         private_key      =  tls_private_key.webserver_key.private_key_pem
+               host           =  aws_instance.bla.public_ip
+       }
+ 
+      provisioner  "remote-exec"  {
+           inline  =  [
+                        "sudo mkfs.ext4 /dev/xvdf",
+                         "sudo mount /dev/xvdf  /var/www/html",
+                     //    "sudo cp -rf /temp_repo/* /var/www/html",
+                          "sudo rm -rf /var/www/html",
+                          "sudo git clone https://github.com/reethuj/lcloud.git  /var/www/html",
+                          "sudo setenforce 0"
+        ]
+    }
+}
+                                                             
+     resource  "aws_s3_bucket"  "buck1"  {                                                                                                                    
+             bucket  =  "mytask-buck"
+              acl        =  "public-read"
+
+                          provisioner  "local-exec"  {
+                                 command  =  "git clone   https://github.com/reethuj/lcloud.git/ #11.jpg"
+ //  command      =       "git clone https://github.com/reethuj/.git /#11.jpg"    https://github.com/reethuj/lcloud.git/#11.jpg
+                                                      }
+
+       tags  =  {
+                   Name   =  "bucket1"
+       }
+  }
+       resource  "aws_s3_bucket_object"  "object"  {
+              bucket  =   aws_s3_bucket.buck1.id
+                  key   =    "#11.jpg"
+               source =    "C:/Users/Vinny/Desktop/#11.jpg"
+                acl        =  "public-read"
+     }
+    
+    resource  "aws_cloudfront_distribution"  "t1_distribution"  {
+                   origin  {
+                     domain_name  =  aws_s3_bucket.buck1.bucket_regional_domain_name
+                     origin_id         =  aws_s3_bucket.buck1.id
+     }
+              enabled                =  true
+              is_ipv6_enabled   =  true
+ 
+             default_cache_behavior  {
+                  allowed_methods  =  [ "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT" ]
+                  cached_methods   =  [  "GET", "HEAD"  ]
+                 target_origin_id     =  aws_s3_bucket.buck1.id
+                   forwarded_values  {
+                           query_string  =  false
+                                 cookies  {
+                                     forward = "none"
+                               }
+                     }
+                 viewer_protocol_policy  =  "allow-all"
+           }
+                price_class = "PriceClass_200"
+                 restrictions  {
+                     geo_restriction  {
+                             restriction_type  =  "whitelist"
+                             locations            =  ["IN"]
+                     }
+                  }
+                         viewer_certificate  {
+                            cloudfront_default_certificate  =  true
+                  }
+                      connection {
+                               type        =  "ssh"
+                               user        =  "ec2-user"
+                               host        =  aws_instance.bla.public_ip
+                               port        =  22
+                        private_key   =  tls_private_key.webserver_key.private_key_pem
+              }
+                    provisioner  "remote-exec"  {
+                         inline  =  [
+                # "sudo su << \"EOF\" \n echo \"<img src = '${self.domain_name}/${aws_s3_bucket_object.object.key}'>\">> /var/www/html/index.html", "EOF"
+                  ]
+              }
+     }
+
+    resource  "null_resource"  "launch"  {
+        depends_on  =  [aws_cloudfront_distribution.t1_distribution]
+
+       provisioner  "local-exec"  {
+         command  =  "echo crome ${aws_instance.bla.public_ip}"
+      }
+  }
+
+      
